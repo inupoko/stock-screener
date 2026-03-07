@@ -1,6 +1,20 @@
 import yfinance as yf
 import pandas as pd
 import json
+from datetime import datetime
+from datetime import time as dt_time
+import pytz
+
+def get_last_update_str(last_trading_date):
+    jst = pytz.timezone('Asia/Tokyo')
+    now = datetime.now(jst)
+    open_time = dt_time(9, 0)
+    close_time = dt_time(15, 30)
+    
+    if last_trading_date == now.date() and open_time <= now.time() <= close_time:
+        return now.strftime("%Y/%m/%d %H:%M")
+    else:
+        return last_trading_date.strftime("%Y/%m/%d 15:30")
 
 def load_name_mapping():
     try:
@@ -14,7 +28,7 @@ def load_name_mapping():
 
 def shorten_company_name(name: str) -> str:
     """Removes common corporate suffixes/prefixes and limits length for heatmap display."""
-    remove_words = ["株式会社", "ホールディングス", "グループ", "フィナンシャルグループ", "フィナンシャル・グループ", "ＨＤ", "HD", "（株）", "(株)"]
+    remove_words = ["株式会社", "ホールディングス", "フィナンシャルグループ", "フィナンシャル・グループ", "ＨＤ", "HD", "（株）", "(株)", "(?)", "(？)"]
     short_name = name
     for word in remove_words:
         short_name = short_name.replace(word, "")
@@ -22,6 +36,10 @@ def shorten_company_name(name: str) -> str:
     # Strip whitespace
     short_name = short_name.strip()
     
+    # Specific edge cases like "FOOD & LIFE COMPANIES"
+    if "FOOD &" in short_name:
+        short_name = "FOOD & LIFE"
+        
     # Hardcap length for very long names
     if len(short_name) > 8:
         short_name = short_name[:8] + "…"
@@ -33,7 +51,7 @@ def fetch_sector_metrics_top500():
         with open('top500_sectors.json', 'r', encoding='utf-8') as f:
             sector_dict = json.load(f)
     except Exception as e:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), ""
         
     all_tickers = []
     for t_list in sector_dict.values():
@@ -44,7 +62,13 @@ def fetch_sector_metrics_top500():
     try:
         data = yf.download(all_tickers, period="2mo", progress=False)
     except Exception as e:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), ""
+        
+    if data.empty or 'Close' not in data.columns:
+        return pd.DataFrame(), pd.DataFrame(), ""
+        
+    last_trading_date = pd.to_datetime(data.index[-1]).date()
+    update_time_str = get_last_update_str(last_trading_date)
     
     name_map = load_name_mapping()
     sector_results = []
@@ -183,8 +207,54 @@ def fetch_sector_metrics_top500():
         
     df_heatmap = pd.DataFrame(heatmap_data)
         
-    return df_sectors, df_heatmap
+    return df_sectors, df_heatmap, update_time_str
 
+
+def fetch_intraday_5m_data(ticker):
+    """
+    Fetches intraday 5-minute data for a specific ticker to display a candlestick chart.
+    """
+    try:
+        data = yf.download(ticker, period="1d", interval="5m", progress=False)
+        if data.empty:
+            return pd.DataFrame()
+            
+        # yf.download with single ticker might return multi-index columns in some pandas versions,
+        # but usually it's single index if only one ticker is requested.
+        # Let's clean it up to ensure flat columns: Open, High, Low, Close, Volume
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = [col[0] for col in data.columns]
+        
+        # Ensure we have the required columns
+        req_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in req_cols:
+            if col not in data.columns:
+                return pd.DataFrame()
+                
+        # Format the index to JST
+        if pd.api.types.is_datetime64tz_dtype(data.index):
+            # It has timezone, convert to Asia/Tokyo
+            data.index = data.index.tz_convert('Asia/Tokyo')
+        else:
+            # It's naive, localize as UTC then convert to Asia/Tokyo (yfinance usually returns UTC naive or tz-aware)
+            # Actually yf returns naive timezone in local time of the exchange usually, or tz-aware for 5m.
+            # Safe bet is tz_localize None then tz_localize exchange time.
+            try:
+                data.index = data.index.tz_localize('Asia/Tokyo')
+            except TypeError:
+                # Already tz-aware
+                data.index = data.index.tz_convert('Asia/Tokyo')
+                
+        df = data[req_cols].copy()
+        df.reset_index(inplace=True)
+        # Rename the datetime column to 'Datetime'
+        df.rename(columns={df.columns[0]: 'Datetime'}, inplace=True)
+        
+        return df
+        
+    except Exception as e:
+        print(f"Error fetching 5m data for {ticker}: {e}")
+        return pd.DataFrame()
 
 def fetch_intraday_replay_data():
     """

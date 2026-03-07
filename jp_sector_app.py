@@ -65,14 +65,16 @@ def main():
     # バックグラウンド更新のよう見せるための処理
     # キャッシュが切れている場合、st.spinnerを別枠で回しつつ前回データがあればそれを残す
     with st.spinner("最新の市場データを取得または更新しています..."):
-        new_sectors, new_heatmap = load_data()
+        new_sectors, new_heatmap, new_update_time = load_data()
         # 取得成功したらセッションステートを更新する
         if not new_sectors.empty and not new_heatmap.empty:
             st.session_state['df_sectors'] = new_sectors
             st.session_state['df_heatmap'] = new_heatmap
+            st.session_state['update_time_str'] = new_update_time
     
     df_sectors = st.session_state['df_sectors']
     df_heatmap = st.session_state['df_heatmap']
+    update_time_str = st.session_state.get('update_time_str', "")
     
     if df_sectors.empty or df_heatmap.empty:
         st.error("データの取得に失敗しました。時間をおいてページを再読み込みしてください。")
@@ -80,7 +82,12 @@ def main():
     
     
     # ----- 2. ヒートマップ（ツリーマップ）の描画 -----
-    st.header("🗺️ 日本株 全体ヒートマップ (主要約500銘柄)")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.header("🗺️ 日本株 全体ヒートマップ (主要約500銘柄)")
+    with col2:
+        st.markdown(f"<div style='text-align: right; color: gray; font-size: 14px; margin-top: 30px;'>最終更新: {update_time_str}</div>", unsafe_allow_html=True)
+        
     st.markdown("ブロックの大きさは「**当日の概算売買代金**」、色は「**前日比の騰落率**」を表しています。")
     
     # PlotlyのTreemapを作成
@@ -91,21 +98,22 @@ def main():
         color="Change", # 騰落率ベース
         color_continuous_scale=["#FF0000", "#333333", "#00FF00"], # 赤 -> 黒 -> 緑
         color_continuous_midpoint=0,
-        custom_data=["ChangeStr", "Price"],
+        custom_data=["ChangeStr", "Price", "YahooURL"],
         hover_name="Name"
     )
     
     # 見た目の調整
     fig.update_traces(
         texttemplate="<b>%{label}</b><br>%{customdata[0]}",
-        textfont={"color": "white", "size": 16}, # フォントサイズを大きめに指定
+        textfont=dict(size=24, family="sans-serif", weight="bold"),
+        textposition="middle center", # テキストを中央に配置
         hovertemplate="<b>%{label}</b><br>価格: ¥%{customdata[1]:.1f}<br>騰落率: %{customdata[0]}<extra></extra>"
     )
     
     fig.update_layout(
         margin=dict(t=30, l=10, r=10, b=10),
         coloraxis_showscale=False,
-        height=750 # 大きめに表示
+        height=1100 # PCでも横長になりすぎないように高さを増やす
     )
     
     st.plotly_chart(fig, use_container_width=True)
@@ -113,7 +121,11 @@ def main():
     st.markdown("---")
     
     # ----- 3. データテーブルの表示 -----
-    st.header("🏢 全33業種 詳細データテーブル")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.header("🏢 全33業種 詳細データテーブル")
+    with col2:
+        st.markdown(f"<div style='text-align: right; color: gray; font-size: 14px; margin-top: 30px;'>最終更新: {update_time_str}</div>", unsafe_allow_html=True)
     
     with st.expander("💡 テーブルの各項目の見方"):
         st.markdown("""
@@ -177,51 +189,52 @@ def main():
     # ----- 4. リプレイ＆深掘りUI -----
     st.markdown("---")
     
-    st.header("🎞️ ヒートマップ リプレイ (直近1営業日)")
-    st.markdown("直近1営業日の値動き（15分刻み）をアニメーション再生します。（データ取得に少し時間がかかります）")
-    
-    if st.button("⏪ データ取得＆リプレイ再生"):
-        with st.spinner("1日分の詳細データを取得・構築しています... (約10〜30秒)"):
-            from jp_sector_data_v2 import fetch_intraday_replay_data
-            frames, times = fetch_intraday_replay_data()
-            
-        if not frames:
-            st.error("データの取得に失敗しました。時間外か、API制限の可能性があります。")
-        else:
-            st.success("再生を開始します！")
-            replay_container = st.empty()
-            
-            # Determine fixed color range dynamically based on max/min to keep colors stable
-            max_val = max(f['Change'].max() for f in frames) if frames else 3.0
-            min_val = min(f['Change'].min() for f in frames) if frames else -3.0
-            c_max = max(abs(max_val), abs(min_val))
-            if pd.isna(c_max) or c_max == 0:
-                c_max = 3.0
-    
-            for frame, ts_str in zip(frames, times):
-                fig_anim = px.treemap(
-                    frame,
-                    path=[px.Constant("日本市場 (主要銘柄)"), "Sector", "Name"],
-                    values="Size",
-                    color="Change",
-                    color_continuous_scale=["#FF0000", "#333333", "#00FF00"],
-                    color_continuous_midpoint=0,
-                    range_color=[-c_max, c_max], # Fixed color scale across frames
-                    custom_data=["ChangeStr", "TradingVal", "Price"], # custom_dataを更新
-                )
-                fig_anim.update_traces(
-                    textinfo="label+text",
-                    textfont=dict(size=24, family="sans-serif", weight="bold"),
-                    hovertemplate="<b>%{label}</b><br>騰落率: %{customdata[0]}<br>売買代金: %{customdata[1]:.1f}億円<br>現在値: ¥%{customdata[2]:.1f}<extra></extra>"
-                )
-                fig_anim.update_layout(
-                    title=f"🕒 再生中時刻: {ts_str} (日本時間)",
-                    margin=dict(t=50, l=10, r=10, b=10),
-                    coloraxis_showscale=False,
-                    height=750
-                )
-                replay_container.plotly_chart(fig_anim, use_container_width=True)
-                time.sleep(1.0) # 1秒ごとに次のフレームへ
+    # [一時対応] リプレイ機能は動作が不安定なため、一旦非表示にしています。
+    # st.header("🎞️ ヒートマップ リプレイ (直近1営業日)")
+    # st.markdown("直近1営業日の値動き（15分刻み）をアニメーション再生します。（データ取得に少し時間がかかります）")
+    # 
+    # if st.button("⏪ データ取得＆リプレイ再生"):
+    #     with st.spinner("1日分の詳細データを取得・構築しています... (約10〜30秒)"):
+    #         from jp_sector_data_v2 import fetch_intraday_replay_data
+    #         frames, times = fetch_intraday_replay_data()
+    #         
+    #     if not frames:
+    #         st.error("データの取得に失敗しました。時間外か、API制限の可能性があります。")
+    #     else:
+    #         st.success("再生を開始します！")
+    #         replay_container = st.empty()
+    #         
+    #         # Determine fixed color range dynamically based on max/min to keep colors stable
+    #         max_val = max(f['Change'].max() for f in frames) if frames else 3.0
+    #         min_val = min(f['Change'].min() for f in frames) if frames else -3.0
+    #         c_max = max(abs(max_val), abs(min_val))
+    #         if pd.isna(c_max) or c_max == 0:
+    #             c_max = 3.0
+    # 
+    #         for frame, ts_str in zip(frames, times):
+    #             fig_anim = px.treemap(
+    #                 frame,
+    #                 path=[px.Constant("日本市場 (主要銘柄)"), "Sector", "Name"],
+    #                 values="Size",
+    #                 color="Change",
+    #                 color_continuous_scale=["#FF0000", "#333333", "#00FF00"],
+    #                 color_continuous_midpoint=0,
+    #                 range_color=[-c_max, c_max], # Fixed color scale across frames
+    #                 custom_data=["ChangeStr", "TradingVal", "Price"], # custom_dataを更新
+    #             )
+    #             fig_anim.update_traces(
+    #                 textinfo="label+text",
+    #                 textfont=dict(size=24, family="sans-serif", weight="bold"),
+    #                 hovertemplate="<b>%{label}</b><br>騰落率: %{customdata[0]}<br>売買代金: %{customdata[1]:.1f}億円<br>現在値: ¥%{customdata[2]:.1f}<extra></extra>"
+    #             )
+    #             fig_anim.update_layout(
+    #                 title=f"🕒 再生中時刻: {ts_str} (日本時間)",
+    #                 margin=dict(t=50, l=10, r=10, b=10),
+    #                 coloraxis_showscale=False,
+    #                 height=750
+    #             )
+    #             replay_container.plotly_chart(fig_anim, use_container_width=True)
+    #             time.sleep(1.0) # 1秒ごとに次のフレームへ
     
     st.markdown("---")
     st.markdown("#### 🔍 特定のセクターをさらに深掘りする")
@@ -233,7 +246,11 @@ def main():
     
     if selected_sector:
         current_sector = selected_sector
-        st.markdown(f"##### 🏢 【{current_sector}】 トップ構成銘柄一覧")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.markdown(f"##### 🏢 【{current_sector}】 トップ構成銘柄一覧")
+        with col2:
+            st.markdown(f"<div style='text-align: right; color: gray; font-size: 12px; margin-top: 5px;'>最終更新: {update_time_str}</div>", unsafe_allow_html=True)
         
         # 最新のデータを再処理して必要な情報を追加
         sector_data = df_heatmap[df_heatmap['Sector'] == current_sector].copy()
@@ -284,7 +301,9 @@ def main():
         styled_df = display_df.style.map(lambda x: highlight_cells(x, 'ﾎﾞﾘﾝｼﾞｬｰ'), subset=['ﾎﾞﾘﾝｼﾞｬｰ']) \
                                     .map(lambda x: highlight_cells(x, '5MA乖離率'), subset=['5MA乖離率'])
         
-        st.dataframe(
+        st.markdown("<p style='color: gray; font-size: 14px; margin-bottom: 5px;'>👉 テーブルの行をクリックすると、その銘柄のYahoo!ファイナンスページが開きます。</p>", unsafe_allow_html=True)
+        
+        event = st.dataframe(
             styled_df,
             column_config={
                 "順位": st.column_config.NumberColumn("順位", width=60),
@@ -299,8 +318,28 @@ def main():
             },
             hide_index=True,
             use_container_width=False,
-        width=1200
-    )
+            width=1200,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=f"jp_table_selection_{current_sector}"
+        )
+        
+        # 選択された行があればYahooURLを開く
+        selected_rows = []
+        if hasattr(event, 'selection'):
+            selected_rows = getattr(event, 'selection').get('rows', [])
+        elif isinstance(event, dict) and 'selection' in event:
+            selected_rows = event['selection'].get('rows', [])
+            
+        if selected_rows:
+            selected_idx = selected_rows[0]
+            if 'YahooURL' in sector_data.columns:
+                yahoo_url = sector_data.iloc[selected_idx]['YahooURL']
+                if pd.notna(yahoo_url) and str(yahoo_url).startswith("http"):
+                    st.components.v1.html(
+                        f"<script>window.open('{yahoo_url}', '_blank');</script>",
+                        height=0,
+                    )
 
 if __name__ == "__main__":
     st.set_page_config(page_title="🇯🇵 全33業種 詳細データテーブル", page_icon="🇯🇵", layout="wide")

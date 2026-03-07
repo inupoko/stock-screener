@@ -1,9 +1,23 @@
 import yfinance as yf
 import pandas as pd
+from datetime import datetime
+from datetime import time as dt_time
+import pytz
+
+def get_last_update_str(last_trading_date):
+    est = pytz.timezone('US/Eastern')
+    now = datetime.now(est)
+    open_time = dt_time(9, 30)
+    close_time = dt_time(16, 0)
+    
+    if last_trading_date == now.date() and open_time <= now.time() <= close_time:
+        return now.strftime("%Y/%m/%d %H:%M")
+    else:
+        return last_trading_date.strftime("%Y/%m/%d 16:00")
 
 def shorten_company_name(name: str) -> str:
     """Removes common corporate suffixes for US stocks and limits length."""
-    remove_words = [" Inc.", " Corp.", " Corporation", " Company", " Holdings", " Group", " PLC", " Ltd.", " N.V.", " Co.", ".com", " Class A", " Class B", " Class C"]
+    remove_words = [" Inc.", " Corp.", " Corporation", " Company", " Holdings", " Group", " PLC", " Ltd.", " N.V.", " Co.", ".com", " Class A", " Class B", " Class C", "(?)", "(？)", " Platforms"]
     short_name = name
     for word in remove_words:
         short_name = short_name.replace(word, "")
@@ -43,7 +57,13 @@ def fetch_us_sector_metrics():
     try:
         data = yf.download(all_tickers, period="2mo", progress=False)
     except Exception as e:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), ""
+        
+    if data.empty or 'Close' not in data.columns:
+        return pd.DataFrame(), pd.DataFrame(), ""
+        
+    last_trading_date = pd.to_datetime(data.index[-1]).date()
+    update_time_str = get_last_update_str(last_trading_date)
     
     sector_results = []
     heatmap_data = []
@@ -181,8 +201,45 @@ def fetch_us_sector_metrics():
         
     df_heatmap = pd.DataFrame(heatmap_data)
         
-    return df_sectors, df_heatmap
+    return df_sectors, df_heatmap, update_time_str
 
+
+def fetch_us_intraday_5m_data(ticker):
+    """
+    Fetches intraday 5-minute data for a specific ticker to display a candlestick chart.
+    """
+    try:
+        data = yf.download(ticker, period="1d", interval="5m", progress=False)
+        if data.empty:
+            return pd.DataFrame()
+            
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = [col[0] for col in data.columns]
+        
+        req_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in req_cols:
+            if col not in data.columns:
+                return pd.DataFrame()
+                
+        # Format the index to EST
+        if pd.api.types.is_datetime64tz_dtype(data.index):
+            data.index = data.index.tz_convert('US/Eastern')
+        else:
+            try:
+                data.index = data.index.tz_localize('US/Eastern')
+            except TypeError:
+                data.index = data.index.tz_convert('US/Eastern')
+                
+        df = data[req_cols].copy()
+        df.reset_index(inplace=True)
+        # Rename the datetime column to 'Datetime'
+        df.rename(columns={df.columns[0]: 'Datetime'}, inplace=True)
+        
+        return df
+        
+    except Exception as e:
+        print(f"Error fetching 5m data for {ticker}: {e}")
+        return pd.DataFrame()
 
 def fetch_us_intraday_replay_data():
     """Fetches US intraday data for replay animation."""
@@ -277,6 +334,6 @@ def fetch_us_intraday_replay_data():
     return frames, times
 
 if __name__ == "__main__":
-    df_s, df_h = fetch_us_sector_metrics()
+    df_s, df_h, t_str = fetch_us_sector_metrics()
     print("Sectors:", len(df_s))
     print("Heatmap:", len(df_h))
